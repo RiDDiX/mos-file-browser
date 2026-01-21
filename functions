@@ -1,0 +1,343 @@
+#!/bin/bash
+
+# MOS FileBrowser Plugin Functions
+# Plugin directory
+PLG_NAME="mos-file-browser"
+PLG_DIR="/boot/config/plugins/${PLG_NAME}"
+LOGFILE="/var/log/${PLG_NAME}.log"
+
+# ============================================================================
+# MOS Plugin Lifecycle Hooks
+# ============================================================================
+
+# Install function - called after .deb installation
+install() {
+  echo "Installing MOS FileBrowser Plugin..."
+  
+  # Create symlinks in /usr/bin/plugins for query API access
+  mkdir -p /usr/bin/plugins
+  ln -sf /usr/bin/ls /usr/bin/plugins/ls 2>/dev/null || true
+  ln -sf /usr/bin/cat /usr/bin/plugins/cat 2>/dev/null || true
+  ln -sf /usr/bin/head /usr/bin/plugins/head 2>/dev/null || true
+  ln -sf /usr/bin/tail /usr/bin/plugins/tail 2>/dev/null || true
+  ln -sf /usr/bin/du /usr/bin/plugins/du 2>/dev/null || true
+  ln -sf /usr/bin/df /usr/bin/plugins/df 2>/dev/null || true
+  ln -sf /usr/bin/stat /usr/bin/plugins/stat 2>/dev/null || true
+  ln -sf /usr/bin/file /usr/bin/plugins/file 2>/dev/null || true
+  ln -sf /usr/bin/mkdir /usr/bin/plugins/mkdir 2>/dev/null || true
+  ln -sf /usr/bin/rm /usr/bin/plugins/rm 2>/dev/null || true
+  ln -sf /usr/bin/cp /usr/bin/plugins/cp 2>/dev/null || true
+  ln -sf /usr/bin/mv /usr/bin/plugins/mv 2>/dev/null || true
+  ln -sf /usr/bin/touch /usr/bin/plugins/touch 2>/dev/null || true
+  ln -sf /usr/bin/chmod /usr/bin/plugins/chmod 2>/dev/null || true
+  ln -sf /usr/bin/chown /usr/bin/plugins/chown 2>/dev/null || true
+  
+  echo "MOS FileBrowser Plugin installed successfully"
+  echo "$(date): Plugin installed" >> "$LOGFILE"
+}
+
+# Uninstall function - called before .deb removal
+uninstall() {
+  echo "Uninstalling MOS FileBrowser Plugin..."
+  
+  # Remove symlinks (only if they point to our expected targets)
+  # We don't remove them as other plugins might use them
+  
+  echo "MOS FileBrowser Plugin uninstalled"
+  echo "$(date): Plugin uninstalled" >> "$LOGFILE"
+}
+
+# Called when plugin is updated
+plugin_update() {
+  echo "Updating MOS FileBrowser Plugin..."
+  install
+}
+
+# Called when MOS starts
+mos_start() {
+  echo "MOS started - FileBrowser Plugin ready"
+  echo "$(date): MOS started" >> "$LOGFILE"
+}
+
+# Called on MOS OS update
+mos_osupdate() {
+  echo "MOS OS update - reinstalling symlinks..."
+  install
+}
+
+# ============================================================================
+# File Operations (called via executefunction API)
+# ============================================================================
+
+# List directory contents
+listdir() {
+  local path="${1:-/}"
+  if [ -d "$path" ]; then
+    ls -la --time-style=long-iso "$path" 2>&1
+  else
+    echo "ERROR: Directory not found: $path"
+    return 1
+  fi
+}
+
+# Read file content
+readfile() {
+  local path="$1"
+  local maxsize="${2:-1048576}"  # Default 1MB max
+  
+  if [ ! -f "$path" ]; then
+    echo "ERROR: File not found: $path"
+    return 1
+  fi
+  
+  local filesize=$(stat -c%s "$path" 2>/dev/null)
+  if [ "$filesize" -gt "$maxsize" ]; then
+    echo "ERROR: File too large (${filesize} bytes, max ${maxsize})"
+    return 1
+  fi
+  
+  cat "$path" 2>&1
+}
+
+# Write file content (expects content via stdin or as second argument)
+writefile() {
+  local path="$1"
+  local content="$2"
+  
+  if [ -z "$path" ]; then
+    echo "ERROR: No path specified"
+    return 1
+  fi
+  
+  # Create parent directory if needed
+  mkdir -p "$(dirname "$path")" 2>/dev/null
+  
+  if [ -n "$content" ]; then
+    echo "$content" > "$path" 2>&1
+  else
+    cat > "$path" 2>&1
+  fi
+  
+  if [ $? -eq 0 ]; then
+    echo "OK: File saved"
+  else
+    echo "ERROR: Failed to write file"
+    return 1
+  fi
+}
+
+# Copy file or directory
+copyitem() {
+  local src="$1"
+  local dst="$2"
+  
+  if [ -z "$src" ] || [ -z "$dst" ]; then
+    echo "ERROR: Source and destination required"
+    return 1
+  fi
+  
+  if [ ! -e "$src" ]; then
+    echo "ERROR: Source not found: $src"
+    return 1
+  fi
+  
+  if [ -d "$src" ]; then
+    cp -r "$src" "$dst" 2>&1
+  else
+    cp "$src" "$dst" 2>&1
+  fi
+  
+  if [ $? -eq 0 ]; then
+    echo "OK: Copied successfully"
+  else
+    echo "ERROR: Copy failed"
+    return 1
+  fi
+}
+
+# Move file or directory
+moveitem() {
+  local src="$1"
+  local dst="$2"
+  
+  if [ -z "$src" ] || [ -z "$dst" ]; then
+    echo "ERROR: Source and destination required"
+    return 1
+  fi
+  
+  if [ ! -e "$src" ]; then
+    echo "ERROR: Source not found: $src"
+    return 1
+  fi
+  
+  mv "$src" "$dst" 2>&1
+  
+  if [ $? -eq 0 ]; then
+    echo "OK: Moved successfully"
+  else
+    echo "ERROR: Move failed"
+    return 1
+  fi
+}
+
+# Delete file or directory
+deleteitem() {
+  local path="$1"
+  local force="${2:-false}"
+  
+  if [ -z "$path" ]; then
+    echo "ERROR: No path specified"
+    return 1
+  fi
+  
+  if [ ! -e "$path" ]; then
+    echo "ERROR: Path not found: $path"
+    return 1
+  fi
+  
+  # Safety check - don't delete critical paths
+  case "$path" in
+    /|/boot|/etc|/usr|/var|/bin|/sbin|/lib|/lib64)
+      echo "ERROR: Cannot delete system directory"
+      return 1
+      ;;
+  esac
+  
+  if [ -d "$path" ]; then
+    if [ "$force" = "true" ]; then
+      rm -rf "$path" 2>&1
+    else
+      rmdir "$path" 2>&1
+    fi
+  else
+    rm "$path" 2>&1
+  fi
+  
+  if [ $? -eq 0 ]; then
+    echo "OK: Deleted successfully"
+  else
+    echo "ERROR: Delete failed"
+    return 1
+  fi
+}
+
+# Create directory
+createdir() {
+  local path="$1"
+  
+  if [ -z "$path" ]; then
+    echo "ERROR: No path specified"
+    return 1
+  fi
+  
+  mkdir -p "$path" 2>&1
+  
+  if [ $? -eq 0 ]; then
+    echo "OK: Directory created"
+  else
+    echo "ERROR: Failed to create directory"
+    return 1
+  fi
+}
+
+# Calculate directory size
+calcsize() {
+  local path="$1"
+  
+  if [ -z "$path" ]; then
+    echo "ERROR: No path specified"
+    return 1
+  fi
+  
+  if [ ! -e "$path" ]; then
+    echo "ERROR: Path not found: $path"
+    return 1
+  fi
+  
+  du -sh "$path" 2>&1
+}
+
+# Calculate directory size with details
+calcsizedetailed() {
+  local path="$1"
+  local depth="${2:-1}"
+  
+  if [ -z "$path" ]; then
+    echo "ERROR: No path specified"
+    return 1
+  fi
+  
+  if [ ! -e "$path" ]; then
+    echo "ERROR: Path not found: $path"
+    return 1
+  fi
+  
+  du -h --max-depth="$depth" "$path" 2>&1 | sort -hr
+}
+
+# Get file info
+fileinfo() {
+  local path="$1"
+  
+  if [ -z "$path" ]; then
+    echo "ERROR: No path specified"
+    return 1
+  fi
+  
+  if [ ! -e "$path" ]; then
+    echo "ERROR: Path not found: $path"
+    return 1
+  fi
+  
+  echo "=== File Info: $path ==="
+  stat "$path" 2>&1
+  echo ""
+  echo "=== File Type ==="
+  file "$path" 2>&1
+}
+
+# Rename file or directory
+renameitem() {
+  local oldpath="$1"
+  local newname="$2"
+  
+  if [ -z "$oldpath" ] || [ -z "$newname" ]; then
+    echo "ERROR: Old path and new name required"
+    return 1
+  fi
+  
+  if [ ! -e "$oldpath" ]; then
+    echo "ERROR: Path not found: $oldpath"
+    return 1
+  fi
+  
+  local dir=$(dirname "$oldpath")
+  local newpath="${dir}/${newname}"
+  
+  mv "$oldpath" "$newpath" 2>&1
+  
+  if [ $? -eq 0 ]; then
+    echo "OK: Renamed to $newpath"
+  else
+    echo "ERROR: Rename failed"
+    return 1
+  fi
+}
+
+# Get disk usage info
+diskusage() {
+  df -h 2>&1
+}
+
+# Search for files
+searchfiles() {
+  local path="$1"
+  local pattern="$2"
+  
+  if [ -z "$path" ] || [ -z "$pattern" ]; then
+    echo "ERROR: Path and pattern required"
+    return 1
+  fi
+  
+  find "$path" -name "$pattern" 2>&1 | head -100
+}

@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "show_hidden_files": false,
+  "default_path": "/mnt",
+  "max_file_size_edit": 1048576,
+  "confirm_delete": true
+}
