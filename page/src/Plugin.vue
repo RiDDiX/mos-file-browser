@@ -31,14 +31,30 @@
         <button class="btn" @click="showNewFileDialog = true">
           <span class="icon">📄</span> New File
         </button>
-        <button class="btn" @click="calculateCurrentSize" :disabled="calculating">
-          <span class="icon">📊</span> {{ calculating ? 'Calculating...' : 'Calc Size' }}
+        <button class="btn" @click="triggerUpload">
+          <span class="icon">⬆️</span> Upload
+        </button>
+        <button class="btn" @click="showSearchDialog = true">
+          <span class="icon">🔍</span> Search
+        </button>
+        <button class="btn" @click="calculateAllSizes" :disabled="calculatingAll">
+          <span class="icon">📊</span> {{ calculatingAll ? 'Calculating...' : 'Calc All Sizes' }}
+        </button>
+        <button class="btn" @click="showDiskUsage">
+          <span class="icon">💿</span> Disk Usage
         </button>
         <label class="checkbox-label">
           <input type="checkbox" v-model="showHidden" @change="refresh" />
           Show Hidden
         </label>
       </div>
+      <input 
+        type="file" 
+        ref="fileInput" 
+        style="display: none" 
+        multiple 
+        @change="handleFileUpload"
+      />
     </div>
 
     <!-- Quick Navigation -->
@@ -79,6 +95,7 @@
               Modified {{ sortField === 'date' ? (sortAsc ? '▲' : '▼') : '' }}
             </th>
             <th class="col-perms">Permissions</th>
+            <th class="col-calcsize">Calc Size</th>
             <th class="col-actions">Actions</th>
           </tr>
         </thead>
@@ -97,6 +114,18 @@
             <td class="col-size">{{ item.isDir ? '-' : formatSize(item.size) }}</td>
             <td class="col-date">{{ item.modified }}</td>
             <td class="col-perms">{{ item.permissions }}</td>
+            <td class="col-calcsize">
+              <span v-if="item.calculatedSize" class="calc-size-value">{{ item.calculatedSize }}</span>
+              <button 
+                v-else 
+                class="btn btn-icon btn-small" 
+                @click.stop="calculateSingleItemSize(item)" 
+                :disabled="item.calculating"
+                title="Calculate Size"
+              >
+                {{ item.calculating ? '⏳' : '📊' }}
+              </button>
+            </td>
             <td class="col-actions">
               <button class="btn btn-icon btn-small" @click.stop="showContextMenu(item, $event)" title="More">
                 ⋮
@@ -110,7 +139,7 @@
             </td>
           </tr>
           <tr v-if="items.length === 0">
-            <td colspan="6" class="empty-message">
+            <td colspan="7" class="empty-message">
               📂 This directory is empty
             </td>
           </tr>
@@ -137,6 +166,12 @@
       <div class="menu-item" @click="renameItem(contextMenu.item)">✏️ Rename</div>
       <div class="menu-item" @click="showInfoDialog(contextMenu.item)">ℹ️ Info</div>
       <div class="menu-item" @click="calculateItemSize(contextMenu.item)">📊 Calculate Size</div>
+      <hr />
+      <div class="menu-item" @click="showChmodDialog(contextMenu.item)">🔐 Chmod</div>
+      <div class="menu-item" @click="showChownDialog(contextMenu.item)">👤 Chown</div>
+      <div class="menu-item" v-if="!contextMenu.item?.isDir" @click="downloadFile(contextMenu.item)">⬇️ Download</div>
+      <div class="menu-item" v-if="contextMenu.item?.isDir" @click="compressDirectory(contextMenu.item)">📦 Compress</div>
+      <div class="menu-item" v-if="isArchive(contextMenu.item?.name)" @click="extractArchive(contextMenu.item)">📂 Extract</div>
       <hr />
       <div class="menu-item danger" @click="confirmDelete(contextMenu.item)">🗑️ Delete</div>
     </div>
@@ -243,6 +278,127 @@
       </div>
     </div>
 
+    <!-- Chmod Dialog -->
+    <div v-if="chmodDialogVisible" class="dialog-overlay" @click.self="chmodDialogVisible = false">
+      <div class="dialog">
+        <h3>🔐 Change Permissions</h3>
+        <p class="dialog-subtitle">{{ chmodTarget?.name }}</p>
+        <div class="chmod-grid">
+          <div class="chmod-section">
+            <h4>Owner</h4>
+            <label><input type="checkbox" v-model="chmodValues.ownerRead" /> Read</label>
+            <label><input type="checkbox" v-model="chmodValues.ownerWrite" /> Write</label>
+            <label><input type="checkbox" v-model="chmodValues.ownerExecute" /> Execute</label>
+          </div>
+          <div class="chmod-section">
+            <h4>Group</h4>
+            <label><input type="checkbox" v-model="chmodValues.groupRead" /> Read</label>
+            <label><input type="checkbox" v-model="chmodValues.groupWrite" /> Write</label>
+            <label><input type="checkbox" v-model="chmodValues.groupExecute" /> Execute</label>
+          </div>
+          <div class="chmod-section">
+            <h4>Others</h4>
+            <label><input type="checkbox" v-model="chmodValues.othersRead" /> Read</label>
+            <label><input type="checkbox" v-model="chmodValues.othersWrite" /> Write</label>
+            <label><input type="checkbox" v-model="chmodValues.othersExecute" /> Execute</label>
+          </div>
+        </div>
+        <div class="chmod-octal">
+          <label>Octal: <input type="text" v-model="chmodOctal" maxlength="4" class="octal-input" /></label>
+          <label class="checkbox-label"><input type="checkbox" v-model="chmodRecursive" /> Recursive</label>
+        </div>
+        <div class="dialog-actions">
+          <button class="btn" @click="chmodDialogVisible = false">Cancel</button>
+          <button class="btn btn-primary" @click="doChmod">Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chown Dialog -->
+    <div v-if="chownDialogVisible" class="dialog-overlay" @click.self="chownDialogVisible = false">
+      <div class="dialog">
+        <h3>👤 Change Owner</h3>
+        <p class="dialog-subtitle">{{ chownTarget?.name }}</p>
+        <input v-model="chownOwner" placeholder="Owner (e.g., root)" class="dialog-input" />
+        <input v-model="chownGroup" placeholder="Group (e.g., root)" class="dialog-input" />
+        <label class="checkbox-label">
+          <input type="checkbox" v-model="chownRecursive" /> Recursive
+        </label>
+        <div class="dialog-actions">
+          <button class="btn" @click="chownDialogVisible = false">Cancel</button>
+          <button class="btn btn-primary" @click="doChown">Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Search Dialog -->
+    <div v-if="showSearchDialog" class="dialog-overlay" @click.self="showSearchDialog = false">
+      <div class="dialog dialog-wide">
+        <h3>🔍 Search Files</h3>
+        <div class="search-inputs">
+          <input 
+            v-model="searchPattern" 
+            placeholder="Search pattern (e.g., *.log, config*)"
+            class="dialog-input"
+            @keyup.enter="doSearch"
+          />
+          <select v-model="searchType" class="dialog-select">
+            <option value="name">By Name</option>
+            <option value="content">By Content (grep)</option>
+          </select>
+        </div>
+        <label class="checkbox-label">
+          <input type="checkbox" v-model="searchRecursive" /> Search subdirectories
+        </label>
+        <div class="search-results" v-if="searchResults.length > 0">
+          <h4>Results ({{ searchResults.length }})</h4>
+          <div 
+            v-for="result in searchResults" 
+            :key="result" 
+            class="search-result-item"
+            @click="navigateToSearchResult(result)"
+          >
+            {{ result }}
+          </div>
+        </div>
+        <div v-if="searching" class="loading">
+          <span class="spinner"></span> Searching...
+        </div>
+        <div class="dialog-actions">
+          <button class="btn" @click="showSearchDialog = false">Close</button>
+          <button class="btn btn-primary" @click="doSearch" :disabled="searching">Search</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Disk Usage Dialog -->
+    <div v-if="diskUsageDialogVisible" class="dialog-overlay" @click.self="diskUsageDialogVisible = false">
+      <div class="dialog dialog-wide">
+        <h3>💿 Disk Usage</h3>
+        <pre class="info-content">{{ diskUsageInfo }}</pre>
+        <div class="dialog-actions">
+          <button class="btn" @click="diskUsageDialogVisible = false">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Upload Progress Dialog -->
+    <div v-if="uploading" class="dialog-overlay">
+      <div class="dialog">
+        <h3>⬆️ Uploading Files</h3>
+        <div class="upload-progress">
+          <div class="upload-file-info">
+            <span class="upload-filename">{{ uploadFileName }}</span>
+            <span class="upload-count">({{ uploadCurrent }} / {{ uploadTotal }})</span>
+          </div>
+          <div class="progress-bar-container">
+            <div class="progress-bar" :style="{ width: uploadProgress + '%' }"></div>
+          </div>
+          <div class="progress-text">{{ uploadProgress }}%</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Notifications -->
     <div class="notifications">
       <div 
@@ -281,6 +437,50 @@ const showRenameDialog = ref(false);
 const showDeleteDialog = ref(false);
 const showEditor = ref(false);
 const showInfoDialogVisible = ref(false);
+const chmodDialogVisible = ref(false);
+const chownDialogVisible = ref(false);
+const showSearchDialog = ref(false);
+const diskUsageDialogVisible = ref(false);
+
+// File input ref
+const fileInput = ref(null);
+
+// Upload progress state
+const uploading = ref(false);
+const uploadProgress = ref(0);
+const uploadFileName = ref('');
+const uploadQueue = ref([]);
+const uploadCurrent = ref(0);
+const uploadTotal = ref(0);
+
+// Calculating all sizes
+const calculatingAll = ref(false);
+
+// Chmod state
+const chmodTarget = ref(null);
+const chmodValues = ref({
+  ownerRead: false, ownerWrite: false, ownerExecute: false,
+  groupRead: false, groupWrite: false, groupExecute: false,
+  othersRead: false, othersWrite: false, othersExecute: false,
+});
+const chmodOctal = ref('644');
+const chmodRecursive = ref(false);
+
+// Chown state
+const chownTarget = ref(null);
+const chownOwner = ref('');
+const chownGroup = ref('');
+const chownRecursive = ref(false);
+
+// Search state
+const searchPattern = ref('');
+const searchType = ref('name');
+const searchRecursive = ref(true);
+const searchResults = ref([]);
+const searching = ref(false);
+
+// Disk usage
+const diskUsageInfo = ref('');
 
 // Dialog data
 const newFolderName = ref('');
@@ -307,8 +507,11 @@ const quickPaths = [
   { name: 'Root', path: '/', icon: '🖥️' },
   { name: 'Mnt', path: '/mnt', icon: '💾' },
   { name: 'Boot', path: '/boot', icon: '⚙️' },
-  { name: 'Plugins', path: '/boot/config/plugins', icon: '🔌' },
+  { name: 'Plugins', path: '/var/www/mos-plugins', icon: '🔌' },
   { name: 'Home', path: '/root', icon: '🏠' },
+  { name: 'Etc', path: '/etc', icon: '📋' },
+  { name: 'Var', path: '/var', icon: '📊' },
+  { name: 'Tmp', path: '/tmp', icon: '🗑️' },
 ];
 
 // Editable file extensions
@@ -350,7 +553,7 @@ const sortedItems = computed(() => {
   return sorted;
 });
 
-// API call helper
+// API call helper (for query API - commands from /usr/bin/plugins)
 const apiCall = async (command, args = [], timeout = 30) => {
   const response = await fetch('/api/v1/mos/plugins/query', {
     method: 'POST',
@@ -362,32 +565,269 @@ const apiCall = async (command, args = [], timeout = 30) => {
   });
   
   if (!response.ok) {
-    throw new Error(`API error: ${response.status}`);
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `API error: ${response.status}`);
   }
   
   return await response.json();
 };
 
-// Execute plugin function
-const executeFunction = async (func, ...args) => {
-  const response = await fetch('/api/v1/mos/plugins/executefunction', {
+// ============================================================================
+// Native MOS API Functions (direct API calls, more reliable)
+// ============================================================================
+
+// Read file content using native MOS API
+const mosReadFile = async (filePath) => {
+  const response = await fetch(`/api/v1/mos/readfile?path=${encodeURIComponent(filePath)}`, {
+    method: 'GET',
+    headers: getAuthHeaders(),
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Failed to read file: ${response.status}`);
+  }
+  
+  return await response.json();
+};
+
+// Create folder using native MOS API
+const mosCreateFolder = async (folderPath, options = {}) => {
+  const { user = '500', group = '500', permissions = '755' } = options;
+  
+  const response = await fetch('/api/v1/mos/createfolder', {
+    method: 'POST',
+    headers: {
+      ...getAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ path: folderPath, user, group, permissions }),
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Failed to create folder: ${response.status}`);
+  }
+  
+  return await response.json();
+};
+
+// Create file using native MOS API
+const mosCreateFile = async (filePath, content = '', options = {}) => {
+  const { user = '500', group = '500', permissions = '644' } = options;
+  
+  const response = await fetch('/api/v1/mos/createfile', {
+    method: 'POST',
+    headers: {
+      ...getAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ path: filePath, content, user, group, permissions }),
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Failed to create file: ${response.status}`);
+  }
+  
+  return await response.json();
+};
+
+// Edit file using native MOS API
+const mosEditFile = async (filePath, content, createBackup = false) => {
+  const response = await fetch('/api/v1/mos/editfile', {
+    method: 'POST',
+    headers: {
+      ...getAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ path: filePath, content, create_backup: createBackup }),
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Failed to edit file: ${response.status}`);
+  }
+  
+  return await response.json();
+};
+
+// Delete file/folder using native MOS API
+const mosDelete = async (filePath, options = {}) => {
+  const { force = true, recursive = false } = options;
+  
+  const response = await fetch('/api/v1/mos/delete', {
+    method: 'POST',
+    headers: {
+      ...getAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ path: filePath, force, recursive }),
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Failed to delete: ${response.status}`);
+  }
+  
+  return await response.json();
+};
+
+// Change ownership using native MOS API
+const mosChown = async (filePath, user, group, recursive = false) => {
+  const response = await fetch('/api/v1/mos/chown', {
+    method: 'POST',
+    headers: {
+      ...getAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ path: filePath, user, group, recursive }),
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Failed to change ownership: ${response.status}`);
+  }
+  
+  return await response.json();
+};
+
+// Change permissions using native MOS API
+const mosChmod = async (filePath, permissions, recursive = false) => {
+  const response = await fetch('/api/v1/mos/chmod', {
+    method: 'POST',
+    headers: {
+      ...getAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ path: filePath, permissions, recursive }),
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Failed to change permissions: ${response.status}`);
+  }
+  
+  return await response.json();
+};
+
+// Write file content using MOS API
+// Uses /mos/createfile for new files, /mos/editfile for existing files
+const writeFileContent = async (filePath, content, isNewFile = false) => {
+  // For new files, try createfile first
+  if (isNewFile) {
+    const response = await fetch('/api/v1/mos/createfile', {
+      method: 'POST',
+      headers: {
+        ...getAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        path: filePath,
+        content: content,
+        user: '500',
+        group: '500',
+        permissions: '644',
+      }),
+    });
+    
+    if (response.ok) {
+      return await response.json();
+    }
+    
+    // If file already exists, fall through to editfile
+    const errorData = await response.json().catch(() => ({}));
+    if (!errorData.error?.includes('already exists')) {
+      throw new Error(errorData.error || `Failed to create file: ${response.status}`);
+    }
+  }
+  
+  // Use editfile for existing files
+  const response = await fetch('/api/v1/mos/editfile', {
     method: 'POST',
     headers: {
       ...getAuthHeaders(),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      plugin: PLUGIN_NAME,
-      function: func,
-      args: args,
+      path: filePath,
+      content: content,
+      create_backup: false,
     }),
   });
   
   if (!response.ok) {
-    throw new Error(`API error: ${response.status}`);
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Failed to save file: ${response.status}`);
   }
   
   return await response.json();
+};
+
+// Helper function to delay execution
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Upload binary file via parallel chunked base64 encoding
+// Optimized for speed within API rate limits (20 req/s)
+const writeBinaryContent = async (filePath, base64Content, onProgress = null) => {
+  const tempPath = filePath + '.b64tmp';
+  const CHUNK_SIZE = 60000; // ~60KB chunks (safe under 100KB API limit)
+  const PARALLEL_REQUESTS = 5; // Parallel requests per batch
+  const BATCH_DELAY = 300; // 300ms between batches (5 req / 300ms = ~16 req/s, under 20 limit)
+  
+  const totalChunks = Math.ceil(base64Content.length / CHUNK_SIZE);
+  const chunkFiles = [];
+  let completedChunks = 0;
+  
+  try {
+    // Prepare all chunk data
+    const chunks = [];
+    for (let i = 0; i < totalChunks; i++) {
+      const chunk = base64Content.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      const chunkPath = `${tempPath}.chunk${i}`;
+      chunkFiles.push(chunkPath);
+      chunks.push({ path: chunkPath, content: chunk, index: i });
+    }
+    
+    // Upload chunks in parallel batches
+    for (let batchStart = 0; batchStart < chunks.length; batchStart += PARALLEL_REQUESTS) {
+      const batch = chunks.slice(batchStart, batchStart + PARALLEL_REQUESTS);
+      
+      // Upload batch in parallel
+      await Promise.all(batch.map(async ({ path, content }) => {
+        await mosCreateFile(path, content);
+        completedChunks++;
+        if (onProgress) {
+          onProgress(Math.round((completedChunks / totalChunks) * 80));
+        }
+      }));
+      
+      // Delay between batches to respect rate limit
+      if (batchStart + PARALLEL_REQUESTS < chunks.length) {
+        await delay(BATCH_DELAY);
+      }
+    }
+    
+    if (onProgress) onProgress(85);
+    
+    // Concatenate chunk files into base64 temp file
+    await apiCall('fb-b64cat', [tempPath, ...chunkFiles], 120);
+    
+    if (onProgress) onProgress(90);
+    
+    // Decode base64 to final binary file
+    await apiCall('fb-b64decode', [tempPath, filePath], 120);
+    
+    if (onProgress) onProgress(100);
+    
+    return { success: true };
+  } catch (e) {
+    // Cleanup temp files on error
+    try { 
+      await apiCall('rm', ['-f', tempPath, ...chunkFiles]); 
+    } catch {}
+    throw new Error('Failed to upload binary file. Please reinstall the plugin. Error: ' + e.message);
+  }
 };
 
 // Parse ls output
@@ -521,7 +961,7 @@ const createFolder = async () => {
   
   try {
     const path = currentPath.value + '/' + newFolderName.value.trim();
-    await apiCall('mkdir', ['-p', path]);
+    await mosCreateFolder(path);
     notify('Folder created', 'success');
     showNewFolderDialog.value = false;
     newFolderName.value = '';
@@ -536,7 +976,7 @@ const createFile = async () => {
   
   try {
     const path = currentPath.value + '/' + newFileName.value.trim();
-    await apiCall('touch', [path]);
+    await mosCreateFile(path, '');
     notify('File created', 'success');
     showNewFileDialog.value = false;
     newFileName.value = '';
@@ -614,11 +1054,7 @@ const doDelete = async () => {
   const path = currentPath.value + '/' + deleteTarget.value.name;
   
   try {
-    if (deleteTarget.value.isDir) {
-      await apiCall('rm', ['-rf', path]);
-    } else {
-      await apiCall('rm', [path]);
-    }
+    await mosDelete(path, { recursive: deleteTarget.value.isDir });
     notify('Deleted successfully', 'success');
     showDeleteDialog.value = false;
     deleteTarget.value = null;
@@ -639,10 +1075,10 @@ const editFile = async (item) => {
   
   try {
     loading.value = true;
-    const result = await apiCall('cat', [path]);
+    const result = await mosReadFile(path);
     
-    if (result.output !== undefined) {
-      editorContent.value = result.output;
+    if (result.content !== undefined) {
+      editorContent.value = result.content;
       editingFile.value = path;
       showEditor.value = true;
     } else {
@@ -659,10 +1095,9 @@ const saveFile = async () => {
   saving.value = true;
   
   try {
-    // Use executefunction to write file content
-    await executeFunction('writefile', editingFile.value, editorContent.value);
+    await mosEditFile(editingFile.value, editorContent.value);
     notify('File saved', 'success');
-    closeEditor();
+    showEditor.value = false;
     refresh();
   } catch (e) {
     notify('Failed to save: ' + e.message, 'error');
@@ -726,6 +1161,329 @@ const showInfoDialog = async (item) => {
     notify('Failed to get info: ' + e.message, 'error');
   }
 };
+
+// Calculate single item size and store in item
+const calculateSingleItemSize = async (item) => {
+  const path = currentPath.value + '/' + item.name;
+  item.calculating = true;
+  
+  try {
+    const result = await apiCall('du', ['-sh', path], 120);
+    if (result.output) {
+      const match = result.output.match(/^(\S+)/);
+      item.calculatedSize = match ? match[1] : result.output.trim();
+    }
+  } catch (e) {
+    item.calculatedSize = 'Error';
+    notify('Size calculation failed: ' + e.message, 'error');
+  } finally {
+    item.calculating = false;
+  }
+};
+
+// Calculate all sizes
+const calculateAllSizes = async () => {
+  calculatingAll.value = true;
+  notify('Calculating sizes for all items...', 'info');
+  
+  for (const item of items.value) {
+    if (!item.calculatedSize) {
+      await calculateSingleItemSize(item);
+    }
+  }
+  
+  calculatingAll.value = false;
+  notify('All sizes calculated', 'success');
+};
+
+// Chmod functions
+const parsePermissions = (perms) => {
+  if (!perms || perms.length < 10) return;
+  chmodValues.value = {
+    ownerRead: perms[1] === 'r',
+    ownerWrite: perms[2] === 'w',
+    ownerExecute: perms[3] === 'x' || perms[3] === 's',
+    groupRead: perms[4] === 'r',
+    groupWrite: perms[5] === 'w',
+    groupExecute: perms[6] === 'x' || perms[6] === 's',
+    othersRead: perms[7] === 'r',
+    othersWrite: perms[8] === 'w',
+    othersExecute: perms[9] === 'x' || perms[9] === 't',
+  };
+  updateOctalFromCheckboxes();
+};
+
+const updateOctalFromCheckboxes = () => {
+  const owner = (chmodValues.value.ownerRead ? 4 : 0) + (chmodValues.value.ownerWrite ? 2 : 0) + (chmodValues.value.ownerExecute ? 1 : 0);
+  const group = (chmodValues.value.groupRead ? 4 : 0) + (chmodValues.value.groupWrite ? 2 : 0) + (chmodValues.value.groupExecute ? 1 : 0);
+  const others = (chmodValues.value.othersRead ? 4 : 0) + (chmodValues.value.othersWrite ? 2 : 0) + (chmodValues.value.othersExecute ? 1 : 0);
+  chmodOctal.value = `${owner}${group}${others}`;
+};
+
+const showChmodDialog = (item) => {
+  closeContextMenu();
+  chmodTarget.value = item;
+  parsePermissions(item.permissions);
+  chmodRecursive.value = false;
+  chmodDialogVisible.value = true;
+};
+
+const doChmod = async () => {
+  if (!chmodTarget.value) return;
+  const path = currentPath.value + '/' + chmodTarget.value.name;
+  
+  try {
+    await mosChmod(path, chmodOctal.value, chmodRecursive.value);
+    notify('Permissions changed', 'success');
+    chmodDialogVisible.value = false;
+    refresh();
+  } catch (e) {
+    notify('Failed to change permissions: ' + e.message, 'error');
+  }
+};
+
+// Chown functions
+const showChownDialog = (item) => {
+  closeContextMenu();
+  chownTarget.value = item;
+  chownOwner.value = '';
+  chownGroup.value = '';
+  chownRecursive.value = false;
+  chownDialogVisible.value = true;
+};
+
+const doChown = async () => {
+  if (!chownTarget.value || (!chownOwner.value && !chownGroup.value)) return;
+  const path = currentPath.value + '/' + chownTarget.value.name;
+  
+  try {
+    await mosChown(path, chownOwner.value || '500', chownGroup.value || '500', chownRecursive.value);
+    notify('Owner changed', 'success');
+    chownDialogVisible.value = false;
+    refresh();
+  } catch (e) {
+    notify('Failed to change owner: ' + e.message, 'error');
+  }
+};
+
+// Upload functions
+const triggerUpload = () => {
+  fileInput.value?.click();
+};
+
+const handleFileUpload = async (event) => {
+  const files = event.target.files;
+  if (!files || files.length === 0) return;
+  
+  const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB limit
+  const fileList = Array.from(files);
+  
+  // Filter out too large files
+  const validFiles = fileList.filter(file => {
+    if (file.size > MAX_FILE_SIZE) {
+      notify(`Skipped ${file.name}: File too large (max 50MB)`, 'error');
+      return false;
+    }
+    return true;
+  });
+  
+  if (validFiles.length === 0) {
+    event.target.value = '';
+    return;
+  }
+  
+  // Start upload progress display
+  uploading.value = true;
+  uploadTotal.value = validFiles.length;
+  uploadCurrent.value = 0;
+  
+  for (const file of validFiles) {
+    uploadCurrent.value++;
+    uploadFileName.value = file.name;
+    uploadProgress.value = 0;
+    
+    try {
+      const isTextFile = file.type.startsWith('text/') || isEditable(file.name);
+      const path = currentPath.value + '/' + file.name;
+      
+      // Read file with progress simulation
+      const content = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        
+        reader.onprogress = (e) => {
+          if (e.lengthComputable) {
+            uploadProgress.value = Math.round((e.loaded / e.total) * 50); // 0-50% for reading
+          }
+        };
+        
+        reader.onload = (e) => {
+          uploadProgress.value = 50;
+          resolve(e.target.result);
+        };
+        
+        reader.onerror = () => reject(new Error('Failed to read file'));
+        
+        if (isTextFile) {
+          reader.readAsText(file);
+        } else {
+          reader.readAsDataURL(file); // Read as base64 data URL for binary
+        }
+      });
+      
+      uploadProgress.value = 60;
+      
+      // Upload file
+      if (isTextFile) {
+        await writeFileContent(path, content, true);
+      } else {
+        // Extract base64 content from data URL (remove "data:...;base64," prefix)
+        const base64Content = content.split(',')[1] || content;
+        await writeBinaryContent(path, base64Content);
+      }
+      
+      uploadProgress.value = 100;
+      notify(`Uploaded: ${file.name}`, 'success');
+      
+    } catch (err) {
+      notify(`Failed to upload ${file.name}: ${err.message}`, 'error');
+    }
+  }
+  
+  uploading.value = false;
+  uploadProgress.value = 0;
+  uploadFileName.value = '';
+  event.target.value = '';
+  refresh();
+};
+
+// Download function
+const downloadFile = async (item) => {
+  closeContextMenu();
+  const path = currentPath.value + '/' + item.name;
+  
+  try {
+    const result = await apiCall('cat', [path]);
+    if (result.output !== undefined) {
+      const blob = new Blob([result.output], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = item.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      notify('Download started', 'success');
+    }
+  } catch (e) {
+    notify('Download failed: ' + e.message, 'error');
+  }
+};
+
+// Compress function
+const compressDirectory = async (item) => {
+  closeContextMenu();
+  const path = currentPath.value + '/' + item.name;
+  const archiveName = item.name + '.tar.gz';
+  const archivePath = currentPath.value + '/' + archiveName;
+  
+  try {
+    notify('Compressing...', 'info');
+    await apiCall('tar', ['-czf', archivePath, '-C', currentPath.value, item.name], 120);
+    notify(`Created: ${archiveName}`, 'success');
+    refresh();
+  } catch (e) {
+    notify('Compression failed: ' + e.message, 'error');
+  }
+};
+
+// Extract function
+const extractArchive = async (item) => {
+  closeContextMenu();
+  const path = currentPath.value + '/' + item.name;
+  
+  try {
+    notify('Extracting...', 'info');
+    if (item.name.endsWith('.tar.gz') || item.name.endsWith('.tgz')) {
+      await apiCall('tar', ['-xzf', path, '-C', currentPath.value], 120);
+    } else if (item.name.endsWith('.tar')) {
+      await apiCall('tar', ['-xf', path, '-C', currentPath.value], 120);
+    } else if (item.name.endsWith('.zip')) {
+      await apiCall('unzip', ['-o', path, '-d', currentPath.value], 120);
+    } else if (item.name.endsWith('.gz')) {
+      await apiCall('gunzip', ['-k', path], 120);
+    }
+    notify('Extraction complete', 'success');
+    refresh();
+  } catch (e) {
+    notify('Extraction failed: ' + e.message, 'error');
+  }
+};
+
+// Check if file is archive
+const isArchive = (filename) => {
+  if (!filename) return false;
+  const lower = filename.toLowerCase();
+  return lower.endsWith('.tar.gz') || lower.endsWith('.tgz') || 
+         lower.endsWith('.tar') || lower.endsWith('.zip') || 
+         lower.endsWith('.gz') || lower.endsWith('.rar') || 
+         lower.endsWith('.7z');
+};
+
+// Search functions
+const doSearch = async () => {
+  if (!searchPattern.value.trim()) return;
+  
+  searching.value = true;
+  searchResults.value = [];
+  
+  try {
+    let result;
+    if (searchType.value === 'name') {
+      const maxdepth = searchRecursive.value ? [] : ['-maxdepth', '1'];
+      result = await apiCall('find', [currentPath.value, ...maxdepth, '-name', searchPattern.value], 60);
+    } else {
+      const args = searchRecursive.value 
+        ? ['-r', '-l', searchPattern.value, currentPath.value]
+        : ['-l', searchPattern.value, currentPath.value + '/*'];
+      result = await apiCall('grep', args, 60);
+    }
+    
+    if (result.output) {
+      searchResults.value = result.output.split('\n').filter(l => l.trim()).slice(0, 100);
+    }
+    
+    if (searchResults.value.length === 0) {
+      notify('No results found', 'info');
+    }
+  } catch (e) {
+    notify('Search failed: ' + e.message, 'error');
+  } finally {
+    searching.value = false;
+  }
+};
+
+const navigateToSearchResult = (result) => {
+  const parts = result.split('/');
+  parts.pop(); // Remove filename
+  const dir = parts.join('/') || '/';
+  loadDirectory(dir);
+  showSearchDialog.value = false;
+};
+
+// Disk usage
+const showDiskUsage = async () => {
+  try {
+    const result = await apiCall('df', ['-h']);
+    diskUsageInfo.value = result.output || 'No data';
+    diskUsageDialogVisible.value = true;
+  } catch (e) {
+    notify('Failed to get disk usage: ' + e.message, 'error');
+  }
+};
+
+// Watch chmod checkboxes to update octal
+watch(chmodValues, updateOctalFromCheckboxes, { deep: true });
 
 // Helpers
 const formatSize = (bytes) => {
@@ -1161,5 +1919,208 @@ tr.directory {
 
 .icon {
   font-size: 16px;
+}
+
+/* Calc Size Column */
+.col-calcsize { 
+  width: 100px; 
+  text-align: center;
+}
+
+.calc-size-value {
+  color: #4fc3f7;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+/* Dialog improvements */
+.dialog-wide {
+  min-width: 600px;
+  max-width: 800px;
+}
+
+.dialog-subtitle {
+  color: #888;
+  font-size: 14px;
+  margin-bottom: 16px;
+  font-family: monospace;
+}
+
+.dialog-input {
+  width: 100%;
+  padding: 12px;
+  background: #3d3d3d;
+  border: 1px solid #555;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+
+.dialog-select {
+  padding: 12px;
+  background: #3d3d3d;
+  border: 1px solid #555;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+
+/* Chmod Dialog */
+.chmod-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.chmod-section {
+  background: #3d3d3d;
+  padding: 12px;
+  border-radius: 8px;
+}
+
+.chmod-section h4 {
+  margin: 0 0 8px 0;
+  color: #4fc3f7;
+  font-size: 14px;
+}
+
+.chmod-section label {
+  display: block;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.chmod-section input[type="checkbox"] {
+  margin-right: 8px;
+  width: auto;
+  margin-bottom: 0;
+}
+
+.chmod-octal {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.octal-input {
+  width: 80px !important;
+  text-align: center;
+  font-family: monospace;
+  font-size: 16px;
+}
+
+/* Search Dialog */
+.search-inputs {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.search-inputs .dialog-input {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.search-inputs .dialog-select {
+  width: 180px;
+  margin-bottom: 0;
+}
+
+.search-results {
+  max-height: 300px;
+  overflow-y: auto;
+  background: #1a1a1a;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+}
+
+.search-results h4 {
+  margin: 0 0 8px 0;
+  color: #4fc3f7;
+}
+
+.search-result-item {
+  padding: 8px;
+  font-family: monospace;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.search-result-item:hover {
+  background: #3d3d3d;
+}
+
+/* Upload Progress */
+.upload-progress {
+  padding: 16px 0;
+}
+
+.upload-file-info {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.upload-filename {
+  font-weight: 500;
+  color: #e0e0e0;
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-count {
+  color: #888;
+  font-size: 13px;
+}
+
+.progress-bar-container {
+  width: 100%;
+  height: 20px;
+  background: #3d3d3d;
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #4fc3f7, #29b6f6);
+  border-radius: 10px;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  text-align: center;
+  color: #4fc3f7;
+  font-weight: 500;
+  font-size: 14px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .chmod-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .search-inputs {
+    flex-direction: column;
+  }
+  
+  .search-inputs .dialog-select {
+    width: 100%;
+  }
+  
+  .dialog-wide {
+    min-width: auto;
+  }
 }
 </style>

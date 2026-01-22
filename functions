@@ -3,21 +3,28 @@
 # MOS FileBrowser Plugin Functions
 # Plugin directory
 PLG_NAME="mos-file-browser"
-PLG_DIR="/boot/config/plugins/${PLG_NAME}"
+PLG_DIR="/var/www/mos-plugins/${PLG_NAME}"
 LOGFILE="/var/log/${PLG_NAME}.log"
 
-# ============================================================================
-# MOS Plugin Lifecycle Hooks
-# ============================================================================
-
-# Install function - called after .deb installation
+# Called when the plugin is installed
 install() {
-  echo "Installing MOS FileBrowser Plugin..."
-  
-  # Create symlinks in /usr/bin/plugins for query API access
-  mkdir -p /usr/bin/plugins
-  ln -sf /usr/bin/ls /usr/bin/plugins/ls 2>/dev/null || true
-  ln -sf /usr/bin/cat /usr/bin/plugins/cat 2>/dev/null || true
+    INDEX_FILE="/var/www/index.html"
+    LOADER_SCRIPT='<script src="/mos-plugins/mos-file-browser/browser-loader.js"></script>'
+    
+    # Inject browser loader into index.html if not already present
+    if [ -f "$INDEX_FILE" ]; then
+        if ! grep -q "mos-file-browser/browser-loader.js" "$INDEX_FILE"; then
+            sed -i 's|</head>|    '"$LOADER_SCRIPT"'\n</head>|' "$INDEX_FILE"
+        fi
+    fi
+    
+    # Set permissions
+    chmod -R 755 /var/www/mos-plugins/mos-file-browser 2>/dev/null || true
+    
+    # Create symlinks in /usr/bin/plugins for query API access
+    mkdir -p /usr/bin/plugins
+    ln -sf /usr/bin/ls /usr/bin/plugins/ls 2>/dev/null || true
+    ln -sf /usr/bin/cat /usr/bin/plugins/cat 2>/dev/null || true
   ln -sf /usr/bin/head /usr/bin/plugins/head 2>/dev/null || true
   ln -sf /usr/bin/tail /usr/bin/plugins/tail 2>/dev/null || true
   ln -sf /usr/bin/du /usr/bin/plugins/du 2>/dev/null || true
@@ -31,38 +38,93 @@ install() {
   ln -sf /usr/bin/touch /usr/bin/plugins/touch 2>/dev/null || true
   ln -sf /usr/bin/chmod /usr/bin/plugins/chmod 2>/dev/null || true
   ln -sf /usr/bin/chown /usr/bin/plugins/chown 2>/dev/null || true
+  ln -sf /usr/bin/find /usr/bin/plugins/find 2>/dev/null || true
+  ln -sf /usr/bin/grep /usr/bin/plugins/grep 2>/dev/null || true
+  ln -sf /usr/bin/tar /usr/bin/plugins/tar 2>/dev/null || true
+  ln -sf /usr/bin/unzip /usr/bin/plugins/unzip 2>/dev/null || true
+  ln -sf /usr/bin/gunzip /usr/bin/plugins/gunzip 2>/dev/null || true
+  ln -sf /usr/bin/gzip /usr/bin/plugins/gzip 2>/dev/null || true
+  ln -sf /usr/bin/wc /usr/bin/plugins/wc 2>/dev/null || true
+  ln -sf /bin/sh /usr/bin/plugins/sh 2>/dev/null || true
+  ln -sf /bin/bash /usr/bin/plugins/bash 2>/dev/null || true
+  ln -sf /usr/bin/base64 /usr/bin/plugins/base64 2>/dev/null || true
+  ln -sf /bin/echo /usr/bin/plugins/echo 2>/dev/null || true
+  
+  # Create helper script for base64 file decoding
+  cat > /usr/bin/plugins/fb-b64decode << 'SCRIPTEOF'
+#!/bin/bash
+# Decode base64 file to binary
+# Usage: fb-b64decode <source.b64> <destination>
+if [ $# -lt 2 ]; then
+  echo "Usage: fb-b64decode <source> <destination>"
+  exit 1
+fi
+SOURCE="$1"
+DEST="$2"
+if [ ! -f "$SOURCE" ]; then
+  echo "Error: Source file not found: $SOURCE"
+  exit 1
+fi
+base64 -d "$SOURCE" > "$DEST" 2>&1
+RESULT=$?
+rm -f "$SOURCE" 2>/dev/null
+exit $RESULT
+SCRIPTEOF
+  chmod +x /usr/bin/plugins/fb-b64decode 2>/dev/null || true
+  
+  # Create helper script to concatenate chunk files into final base64 file
+  cat > /usr/bin/plugins/fb-b64cat << 'SCRIPTEOF'
+#!/bin/bash
+# Concatenate chunk files into base64 temp file, then decode
+# Usage: fb-b64cat <output_b64_file> <chunk1> [chunk2] ...
+if [ $# -lt 2 ]; then
+  echo "Usage: fb-b64cat <output_b64> <chunk1> [chunk2] ..."
+  exit 1
+fi
+OUTPUT="$1"
+shift
+# Concatenate all chunk files
+cat "$@" > "$OUTPUT"
+# Remove chunk files
+rm -f "$@" 2>/dev/null
+exit 0
+SCRIPTEOF
+  chmod +x /usr/bin/plugins/fb-b64cat 2>/dev/null || true
   
   echo "MOS FileBrowser Plugin installed successfully"
   echo "$(date): Plugin installed" >> "$LOGFILE"
 }
 
-# Uninstall function - called before .deb removal
+# Called when the plugin is uninstalled
 uninstall() {
-  echo "Uninstalling MOS FileBrowser Plugin..."
-  
-  # Remove symlinks (only if they point to our expected targets)
-  # We don't remove them as other plugins might use them
-  
-  echo "MOS FileBrowser Plugin uninstalled"
-  echo "$(date): Plugin uninstalled" >> "$LOGFILE"
+    INDEX_FILE="/var/www/index.html"
+    
+    # Remove browser loader from index.html
+    if [ -f "$INDEX_FILE" ]; then
+        sed -i '/mos-file-browser\/browser-loader.js/d' "$INDEX_FILE"
+    fi
 }
 
-# Called when plugin is updated
+# Called when the plugin is updated
 plugin_update() {
-  echo "Updating MOS FileBrowser Plugin..."
-  install
+    install
 }
 
 # Called when MOS starts
 mos_start() {
-  echo "MOS started - FileBrowser Plugin ready"
-  echo "$(date): MOS started" >> "$LOGFILE"
+    INDEX_FILE="/var/www/index.html"
+    LOADER_SCRIPT='<script src="/mos-plugins/mos-file-browser/browser-loader.js"></script>'
+    
+    if [ -f "$INDEX_FILE" ]; then
+        if ! grep -q "mos-file-browser/browser-loader.js" "$INDEX_FILE"; then
+            sed -i 's|</head>|    '"$LOADER_SCRIPT"'\n</head>|' "$INDEX_FILE"
+        fi
+    fi
 }
 
-# Called on MOS OS update
+# Called during an OS or kernel update
 mos_osupdate() {
-  echo "MOS OS update - reinstalling symlinks..."
-  install
+    install
 }
 
 # ============================================================================
@@ -99,10 +161,24 @@ readfile() {
   cat "$path" 2>&1
 }
 
-# Write file content (expects content via stdin or as second argument)
+# Write file content (MOS executefunction passes args via stdin as JSON array)
 writefile() {
   local path="$1"
   local content="$2"
+  
+  # If no direct args, try reading from stdin (MOS executefunction API)
+  if [ -z "$path" ]; then
+    # Read JSON from stdin: ["path", "content"]
+    local json_input
+    json_input=$(cat)
+    if [ -n "$json_input" ]; then
+      # Parse JSON array - extract first and second elements
+      path=$(echo "$json_input" | sed 's/^\["//' | sed 's/".*//')
+      content=$(echo "$json_input" | sed 's/^[^,]*,"//' | sed 's/"[^"]*$//')
+      # Handle escaped characters
+      content=$(echo "$content" | sed 's/\\n/\n/g' | sed 's/\\t/\t/g' | sed 's/\\"/"/g')
+    fi
+  fi
   
   if [ -z "$path" ]; then
     echo "ERROR: No path specified"
@@ -112,14 +188,15 @@ writefile() {
   # Create parent directory if needed
   mkdir -p "$(dirname "$path")" 2>/dev/null
   
+  # Use printf to preserve content exactly (echo might interpret escapes)
   if [ -n "$content" ]; then
-    echo "$content" > "$path" 2>&1
+    printf '%s' "$content" > "$path" 2>&1
   else
-    cat > "$path" 2>&1
+    echo -n > "$path" 2>&1
   fi
   
   if [ $? -eq 0 ]; then
-    echo "OK: File saved"
+    echo "OK: File saved to $path"
   else
     echo "ERROR: Failed to write file"
     return 1
@@ -340,4 +417,128 @@ searchfiles() {
   fi
   
   find "$path" -name "$pattern" 2>&1 | head -100
+}
+
+# Write file content from base64 (for binary files)
+writefilebase64() {
+  local path="$1"
+  local base64content="$2"
+  
+  # If no direct args, try reading from stdin (MOS executefunction API)
+  if [ -z "$path" ]; then
+    local json_input
+    json_input=$(cat)
+    if [ -n "$json_input" ]; then
+      path=$(echo "$json_input" | sed 's/^\["//' | sed 's/".*//')
+      base64content=$(echo "$json_input" | sed 's/^[^,]*,"//' | sed 's/"[^"]*$//')
+    fi
+  fi
+  
+  if [ -z "$path" ]; then
+    echo "ERROR: No path specified"
+    return 1
+  fi
+  
+  # Create parent directory if needed
+  mkdir -p "$(dirname "$path")" 2>/dev/null
+  
+  if [ -n "$base64content" ]; then
+    echo "$base64content" | base64 -d > "$path" 2>&1
+  else
+    echo "ERROR: No base64 content provided"
+    return 1
+  fi
+  
+  if [ $? -eq 0 ]; then
+    echo "OK: Binary file saved to $path"
+  else
+    echo "ERROR: Failed to write binary file"
+    return 1
+  fi
+}
+
+# Compress directory to tar.gz
+compressdir() {
+  local path="$1"
+  local output="$2"
+  
+  if [ -z "$path" ] || [ -z "$output" ]; then
+    echo "ERROR: Path and output required"
+    return 1
+  fi
+  
+  if [ ! -d "$path" ]; then
+    echo "ERROR: Directory not found: $path"
+    return 1
+  fi
+  
+  tar -czf "$output" -C "$(dirname "$path")" "$(basename "$path")" 2>&1
+  
+  if [ $? -eq 0 ]; then
+    echo "OK: Compressed to $output"
+  else
+    echo "ERROR: Compression failed"
+    return 1
+  fi
+}
+
+# Extract archive
+extractarchive() {
+  local archive="$1"
+  local destdir="$2"
+  
+  if [ -z "$archive" ]; then
+    echo "ERROR: Archive path required"
+    return 1
+  fi
+  
+  if [ ! -f "$archive" ]; then
+    echo "ERROR: Archive not found: $archive"
+    return 1
+  fi
+  
+  destdir="${destdir:-$(dirname "$archive")}"
+  
+  case "$archive" in
+    *.tar.gz|*.tgz)
+      tar -xzf "$archive" -C "$destdir" 2>&1
+      ;;
+    *.tar)
+      tar -xf "$archive" -C "$destdir" 2>&1
+      ;;
+    *.zip)
+      unzip -o "$archive" -d "$destdir" 2>&1
+      ;;
+    *.gz)
+      gunzip -k "$archive" 2>&1
+      ;;
+    *)
+      echo "ERROR: Unsupported archive format"
+      return 1
+      ;;
+  esac
+  
+  if [ $? -eq 0 ]; then
+    echo "OK: Extracted to $destdir"
+  else
+    echo "ERROR: Extraction failed"
+    return 1
+  fi
+}
+
+# Get file/directory owner info
+getowner() {
+  local path="$1"
+  
+  if [ -z "$path" ]; then
+    echo "ERROR: No path specified"
+    return 1
+  fi
+  
+  if [ ! -e "$path" ]; then
+    echo "ERROR: Path not found: $path"
+    return 1
+  fi
+  
+  stat -c "%U:%G" "$path" 2>&1
 }

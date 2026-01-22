@@ -1,0 +1,178 @@
+name: Build and Release MOS FileBrowser Plugin
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - master
+    paths:
+      - 'page/**'
+      - 'functions'
+      - 'settings.json'
+      - '.github/workflows/**'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Get version from plugin.config.js
+      id: version
+      run: |
+        VERSION=$(grep -oP "version:\s*['\"]\\K[^'\"]*" page/plugin.config.js)
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "Detected version: $VERSION"
+
+    - name: Install dependencies and build
+      env:
+        PLUGIN_VERSION: ${{ env.VERSION }}
+      run: |
+        cd page
+        npm install
+        npm run build
+        echo "Built with PLUGIN_VERSION=$PLUGIN_VERSION"
+
+    - name: Convert line endings to LF
+      run: |
+        sed -i 's/\r$//' functions
+
+    - name: Create Release Archive (tar.gz)
+      run: |
+        PKG_NAME="mos-file-browser"
+        mkdir -p release/${PKG_NAME}
+        cp -r page/dist/${PKG_NAME}/* release/${PKG_NAME}/
+        cp functions release/${PKG_NAME}/
+        cp settings.json release/${PKG_NAME}/
+        chmod +x release/${PKG_NAME}/functions
+        cd release
+        tar -czf ../${PKG_NAME}-${{ env.VERSION }}.tar.gz .
+        cd ..
+        md5sum ${PKG_NAME}-${{ env.VERSION }}.tar.gz | awk '{print $1}' > ${PKG_NAME}-${{ env.VERSION }}.tar.gz.md5
+
+    - name: Create .deb Package (amd64)
+      run: |
+        PKG_NAME="mos-file-browser"
+        PKG_VERSION="${{ env.VERSION }}"
+        PKG_DIR="${PKG_NAME}_${PKG_VERSION}_amd64"
+        
+        mkdir -p ${PKG_DIR}/DEBIAN
+        mkdir -p ${PKG_DIR}/var/www/mos-plugins/${PKG_NAME}
+        
+        cp -r page/dist/${PKG_NAME}/* ${PKG_DIR}/var/www/mos-plugins/${PKG_NAME}/
+        cp functions ${PKG_DIR}/var/www/mos-plugins/${PKG_NAME}/
+        cp settings.json ${PKG_DIR}/var/www/mos-plugins/${PKG_NAME}/
+        chmod +x ${PKG_DIR}/var/www/mos-plugins/${PKG_NAME}/functions
+        
+        printf '%s\n' "Package: ${PKG_NAME}" "Version: ${PKG_VERSION}" "Section: utils" "Priority: optional" "Architecture: amd64" "Maintainer: RiDDiX <info@riddix.net>" "Description: MOS FileBrowser Plugin" " A powerful file browser plugin for MOS with chmod, chown, search," " compress, extract, upload and download capabilities." > ${PKG_DIR}/DEBIAN/control
+        
+        printf '%s\n' '#!/bin/bash' 'set -e' 'PLG_DIR="/var/www/mos-plugins/mos-file-browser"' 'if [ -f "${PLG_DIR}/functions" ]; then' '  source "${PLG_DIR}/functions"' '  install' 'fi' 'chmod -R 755 /var/www/mos-plugins/mos-file-browser' 'exit 0' > ${PKG_DIR}/DEBIAN/postinst
+        chmod 755 ${PKG_DIR}/DEBIAN/postinst
+        
+        printf '%s\n' '#!/bin/bash' 'set -e' 'PLG_DIR="/var/www/mos-plugins/mos-file-browser"' 'if [ -f "${PLG_DIR}/functions" ]; then' '  source "${PLG_DIR}/functions"' '  uninstall' 'fi' 'exit 0' > ${PKG_DIR}/DEBIAN/prerm
+        chmod 755 ${PKG_DIR}/DEBIAN/prerm
+        
+        dpkg-deb --build ${PKG_DIR} .
+
+    - name: Create .deb Package (arm64)
+      run: |
+        PKG_NAME="mos-file-browser"
+        PKG_VERSION="${{ env.VERSION }}"
+        PKG_DIR="${PKG_NAME}_${PKG_VERSION}_arm64"
+        
+        mkdir -p ${PKG_DIR}/DEBIAN
+        mkdir -p ${PKG_DIR}/var/www/mos-plugins/${PKG_NAME}
+        
+        cp -r page/dist/${PKG_NAME}/* ${PKG_DIR}/var/www/mos-plugins/${PKG_NAME}/
+        cp functions ${PKG_DIR}/var/www/mos-plugins/${PKG_NAME}/
+        cp settings.json ${PKG_DIR}/var/www/mos-plugins/${PKG_NAME}/
+        chmod +x ${PKG_DIR}/var/www/mos-plugins/${PKG_NAME}/functions
+        
+        printf '%s\n' "Package: ${PKG_NAME}" "Version: ${PKG_VERSION}" "Section: utils" "Priority: optional" "Architecture: arm64" "Maintainer: RiDDiX <info@riddix.net>" "Description: MOS FileBrowser Plugin" " A powerful file browser plugin for MOS with chmod, chown, search," " compress, extract, upload and download capabilities." > ${PKG_DIR}/DEBIAN/control
+        
+        printf '%s\n' '#!/bin/bash' 'set -e' 'PLG_DIR="/var/www/mos-plugins/mos-file-browser"' 'if [ -f "${PLG_DIR}/functions" ]; then' '  source "${PLG_DIR}/functions"' '  install' 'fi' 'chmod -R 755 /var/www/mos-plugins/mos-file-browser' 'exit 0' > ${PKG_DIR}/DEBIAN/postinst
+        chmod 755 ${PKG_DIR}/DEBIAN/postinst
+        
+        printf '%s\n' '#!/bin/bash' 'set -e' 'PLG_DIR="/var/www/mos-plugins/mos-file-browser"' 'if [ -f "${PLG_DIR}/functions" ]; then' '  source "${PLG_DIR}/functions"' '  uninstall' 'fi' 'exit 0' > ${PKG_DIR}/DEBIAN/prerm
+        chmod 755 ${PKG_DIR}/DEBIAN/prerm
+        
+        dpkg-deb --build ${PKG_DIR} .
+
+    - name: Delete existing releases
+      run: |
+        gh release delete "v${{ env.VERSION }}" --yes || true
+        git push origin :refs/tags/v${{ env.VERSION }} || true
+        gh release delete "latest" --yes || true
+        git push origin :refs/tags/latest || true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create versioned Release
+      run: |
+        echo "## MOS FileBrowser v${{ env.VERSION }}" > release_notes.md
+        echo "" >> release_notes.md
+        echo "A powerful file browser plugin for MOS" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "### Features" >> release_notes.md
+        echo "- Browse disks, shares, and pools" >> release_notes.md
+        echo "- Edit text and config files" >> release_notes.md
+        echo "- Chmod and Chown support" >> release_notes.md
+        echo "- File search (by name and content)" >> release_notes.md
+        echo "- Compress directories (tar.gz)" >> release_notes.md
+        echo "- Extract archives (tar.gz, zip, gz)" >> release_notes.md
+        echo "- File upload and download" >> release_notes.md
+        echo "- Calc Size column" >> release_notes.md
+        echo "- Disk usage display" >> release_notes.md
+        echo "- Copy, move, rename, delete files" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "### Installation" >> release_notes.md
+        echo "Install via MOS Hub with template: https://github.com/RiDDiX/mos-templates" >> release_notes.md
+        gh release create "v${{ env.VERSION }}" \
+          --title "MOS FileBrowser v${{ env.VERSION }}" \
+          --notes-file release_notes.md \
+          ./mos-file-browser-${{ env.VERSION }}.tar.gz \
+          ./mos-file-browser-${{ env.VERSION }}.tar.gz.md5 \
+          ./mos-file-browser_${{ env.VERSION }}_amd64.deb \
+          ./mos-file-browser_${{ env.VERSION }}_arm64.deb
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create latest Release
+      run: |
+        PKG_NAME="mos-file-browser"
+        cp ${PKG_NAME}-${{ env.VERSION }}.tar.gz ${PKG_NAME}-latest.tar.gz
+        cp ${PKG_NAME}-${{ env.VERSION }}.tar.gz.md5 ${PKG_NAME}-latest.tar.gz.md5
+        cp ${PKG_NAME}_${{ env.VERSION }}_amd64.deb ${PKG_NAME}_latest_amd64.deb
+        cp ${PKG_NAME}_${{ env.VERSION }}_arm64.deb ${PKG_NAME}_latest_arm64.deb
+        echo "## MOS FileBrowser (Latest)" > latest_notes.md
+        echo "" >> latest_notes.md
+        echo "This is always the latest stable release (currently v${{ env.VERSION }})." >> latest_notes.md
+        echo "" >> latest_notes.md
+        echo "### Quick Install (amd64)" >> latest_notes.md
+        echo "wget https://github.com/RiDDiX/mos-file-browser/releases/download/latest/mos-file-browser_latest_amd64.deb" >> latest_notes.md
+        echo "dpkg -i mos-file-browser_latest_amd64.deb" >> latest_notes.md
+        echo "" >> latest_notes.md
+        echo "### Quick Install (arm64)" >> latest_notes.md
+        echo "wget https://github.com/RiDDiX/mos-file-browser/releases/download/latest/mos-file-browser_latest_arm64.deb" >> latest_notes.md
+        echo "dpkg -i mos-file-browser_latest_arm64.deb" >> latest_notes.md
+        gh release create "latest" \
+          --title "MOS FileBrowser (Latest)" \
+          --notes-file latest_notes.md \
+          ./${PKG_NAME}-latest.tar.gz \
+          ./${PKG_NAME}-latest.tar.gz.md5 \
+          ./${PKG_NAME}_latest_amd64.deb \
+          ./${PKG_NAME}_latest_arm64.deb
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

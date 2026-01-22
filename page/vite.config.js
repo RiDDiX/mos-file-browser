@@ -1,61 +1,64 @@
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import federation from '@originjs/vite-plugin-federation';
-import { readFileSync } from 'fs';
+import { writeFileSync, mkdirSync } from 'fs';
 import { resolve } from 'path';
+import pluginConfig from './plugin.config.js';
 
-// Read plugin config
-const pluginConfigPath = resolve(__dirname, 'plugin.config.js');
-let pluginConfig = {};
-try {
-  const configContent = readFileSync(pluginConfigPath, 'utf-8');
-  const match = configContent.match(/export default\s*(\{[\s\S]*\})/);
-  if (match) {
-    pluginConfig = eval('(' + match[1] + ')');
-  }
-} catch (e) {
-  console.warn('Could not read plugin.config.js:', e.message);
-}
+const PLUGIN_VERSION = process.env.PLUGIN_VERSION || pluginConfig.version;
+const PLUGIN_NAME = pluginConfig.name;
+
+const generateManifest = () => ({
+  name: 'generate-manifest',
+  closeBundle() {
+    const outDir = resolve(__dirname, `dist/${PLUGIN_NAME}`);
+
+    const manifest = {
+      name: pluginConfig.name,
+      displayName: pluginConfig.displayName || pluginConfig.name,
+      description: pluginConfig.description || '',
+      version: PLUGIN_VERSION,
+      icon: pluginConfig.icon || '',
+      author: pluginConfig.author || '',
+      homepage: pluginConfig.homepage || '',
+    };
+
+    try {
+      mkdirSync(outDir, { recursive: true });
+      writeFileSync(resolve(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+      console.log(`\n✓ Generated manifest.json for "${pluginConfig.displayName}"`);
+      console.log(`  → dist/${PLUGIN_NAME}/manifest.json\n`);
+    } catch (e) {
+      console.error('Failed to generate manifest.json:', e);
+    }
+  },
+});
 
 export default defineConfig({
+  define: {
+    __PLUGIN_VERSION__: JSON.stringify(PLUGIN_VERSION),
+    __PLUGIN_NAME__: JSON.stringify(pluginConfig.displayName),
+  },
   plugins: [
     vue(),
     federation({
-      name: 'mos-file-browser',
+      name: PLUGIN_NAME,
       filename: 'remoteEntry.js',
       exposes: {
         './Plugin': './src/Plugin.vue',
       },
       shared: ['vue'],
     }),
-    {
-      name: 'generate-manifest',
-      writeBundle() {
-        const manifest = {
-          name: pluginConfig.name || 'mos-file-browser',
-          displayName: pluginConfig.displayName || 'MOS FileBrowser',
-          description: pluginConfig.description || 'File browser for MOS',
-          version: process.env.npm_package_version || '1.0.0',
-          icon: pluginConfig.icon || 'mdi-folder-open',
-          author: pluginConfig.author || 'RiDDiX',
-          homepage: pluginConfig.homepage || '',
-          remoteEntry: 'remoteEntry.js',
-          exposedModule: './Plugin',
-        };
-        
-        const fs = require('fs');
-        const path = require('path');
-        fs.writeFileSync(
-          path.resolve(__dirname, 'dist', 'manifest.json'),
-          JSON.stringify(manifest, null, 2)
-        );
-      },
-    },
+    generateManifest(),
   ],
   build: {
-    modulePreload: false,
     target: 'esnext',
     minify: false,
     cssCodeSplit: false,
+    outDir: `dist/${PLUGIN_NAME}`,
+    assetsDir: '',
+    rollupOptions: {
+      input: {},
+    },
   },
 });

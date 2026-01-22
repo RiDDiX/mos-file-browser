@@ -1,0 +1,4 @@
+# Ensure bash scripts always use LF line endings
+functions text eol=lf
+*.sh text eol=lf
+browser-loader.js text eol=lf
